@@ -14,8 +14,12 @@
 
 #include "paddle/phi/kernels/gather_kernel.h"
 
+#include "paddle/common/flags.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/contiguous_kernel.h"
 #include "paddle/phi/kernels/funcs/gather.cu.h"
+
+COMMON_DECLARE_bool(use_stride_kernel);
 
 namespace phi {
 
@@ -30,33 +34,41 @@ void GatherKernel(const Context& dev_ctx,
     return;
   }
   const auto& index_type = index.dtype();
+
+  const DenseTensor* x_tensor = &x;
+  DenseTensor x_contiguous;
+  if (FLAGS_use_stride_kernel && !x.meta().is_contiguous()) {
+    x_contiguous = phi::Contiguous<T, Context>(dev_ctx, x);
+    x_tensor = &x_contiguous;
+  }
+
   auto axis_v = axis.to<int>();
   if (axis_v < 0) {
-    axis_v += static_cast<int>(x.dims().size());
+    axis_v += static_cast<int>(x_tensor->dims().size());
   }
   if (axis_v != 0) {
     if (index_type == phi::DataType::INT32) {
       phi::funcs::GatherV2CUDAFunction<T, int32_t>(
-          &x, &index, axis_v, out, dev_ctx);
+          x_tensor, &index, axis_v, out, dev_ctx);
     } else if (index_type == phi::DataType::INT64) {
       phi::funcs::GatherV2CUDAFunction<T, int64_t>(
-          &x, &index, axis_v, out, dev_ctx);
+          x_tensor, &index, axis_v, out, dev_ctx);
     } else if (index_type == phi::DataType::INT16) {
       phi::funcs::GatherV2CUDAFunction<T, int16_t>(
-          &x, &index, axis_v, out, dev_ctx);
+          x_tensor, &index, axis_v, out, dev_ctx);
     }
     return;
   }
 
   dev_ctx.template Alloc<T>(out);
 
-  if (x.numel() == 0) return;
+  if (x_tensor->numel() == 0) return;
   if (index_type == phi::DataType::INT32) {
-    phi::funcs::GPUGather<T, int>(dev_ctx, x, index, out);
+    phi::funcs::GPUGather<T, int>(dev_ctx, *x_tensor, index, out);
   } else if (index_type == phi::DataType::INT64) {
-    phi::funcs::GPUGather<T, int64_t>(dev_ctx, x, index, out);
+    phi::funcs::GPUGather<T, int64_t>(dev_ctx, *x_tensor, index, out);
   } else if (index_type == phi::DataType::INT16) {
-    phi::funcs::GPUGather<T, int16_t>(dev_ctx, x, index, out);
+    phi::funcs::GPUGather<T, int16_t>(dev_ctx, *x_tensor, index, out);
   } else {
     PADDLE_THROW(common::errors::InvalidArgument(
         "The data type of Input(Index) of gather "
